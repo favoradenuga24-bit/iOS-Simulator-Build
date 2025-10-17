@@ -1,0 +1,81 @@
+name: iOS Auto Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-simulator:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show repo files
+        run: ls -la
+
+      - name: Detect project/workspace and scheme
+        id: detect
+        run: |
+          set -euo pipefail
+          proj=$(ls -1 *.xcodeproj 2>/dev/null | head -n1 || true)
+          ws=$(ls -1 *.xcworkspace 2>/dev/null | head -n1 || true)
+
+          if [ -n "$ws" ]; then
+            echo "Found workspace: $ws"
+            schemes=$(xcodebuild -workspace "$ws" -list 2>/dev/null | awk '/Schemes:/{flag=1; next} /Targets:/{flag=0} flag' | sed 's/^[[:space:]]*//')
+            type="workspace"
+            name="$ws"
+          elif [ -n "$proj" ]; then
+            echo "Found project: $proj"
+            schemes=$(xcodebuild -project "$proj" -list 2>/dev/null | awk '/Schemes:/{flag=1; next} /Targets:/{flag=0} flag' | sed 's/^[[:space:]]*//')
+            type="project"
+            name="$proj"
+          else
+            echo "No .xcworkspace or .xcodeproj found. Add an Xcode project to the repo or set INPUT_PROJECT/INPUT_WORKSPACE."
+            exit 1
+          fi
+
+          scheme=$(echo "$schemes" | head -n1 | tr -d '\r' || true)
+          if [ -z "$scheme" ]; then
+            echo "No scheme detected. Ensure your scheme is shared or set the SCHEME input."
+            exit 1
+          fi
+
+          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
+          echo "type=$type" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Build for iOS Simulator
+        env:
+          SCHEME: ${{ steps.detect.outputs.scheme }}
+          TYPE: ${{ steps.detect.outputs.type }}
+          NAME: ${{ steps.detect.outputs.name }}
+        run: |
+          set -euo pipefail
+          DERIVED=build/DerivedData
+          mkdir -p "$DERIVED"
+          DEST='platform=iOS Simulator,name=iPhone 14'
+          if [ "$TYPE" = "workspace" ]; then
+            xcodebuild -workspace "$NAME" -scheme "$SCHEME" -sdk iphonesimulator -destination "$DEST" -derivedDataPath "$DERIVED" clean build | tee xcodebuild.log
+          else
+            xcodebuild -project "$NAME" -scheme "$SCHEME" -sdk iphonesimulator -destination "$DEST" -derivedDataPath "$DERIVED" clean build | tee xcodebuild.log
+          fi
+          echo "DERIVED_PATH=$DERIVED" >> $GITHUB_OUTPUT
+
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+
+      - name: Upload built .app (if exists)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-product
+          path: |
+            build/DerivedData/Build/Products/Debug-iphonesimulator/*.app
+            build/DerivedData/Build/Products/*/*.app
